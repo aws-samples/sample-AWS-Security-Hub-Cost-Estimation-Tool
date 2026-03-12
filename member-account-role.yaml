@@ -1,0 +1,80 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Read-only IAM role for Security Hub cost estimation data collection (deploy to each member account)'
+
+Parameters:
+  CollectorAccountId:
+    Type: String
+    Description: AWS Account ID where the Lambda collector function is deployed
+    AllowedPattern: '\d{12}'
+    ConstraintDescription: Must be a 12-digit AWS account ID
+
+Resources:
+  SecurityHubCostEstimatorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: SecurityHubCostEstimatorRole
+      Description: Read-only role for Security Hub cost estimation data collection
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:${AWS::Partition}:iam::${CollectorAccountId}:root'
+            Action: sts:AssumeRole
+            Condition:
+              StringLike:
+                aws:PrincipalArn: !Sub 'arn:${AWS::Partition}:iam::${CollectorAccountId}:role/*LambdaExecutionRole*'
+      ManagedPolicyArns:
+        - !Ref SecurityHubCostEstimatorPolicy
+
+  SecurityHubCostEstimatorPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: SecurityHubCostEstimatorReadOnly
+      Description: Read-only permissions designed with least-privilege principles for Security Hub cost estimation. Review permissions before deployment to verify they meet your security requirements.
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # ec2:DescribeInstances, iam:ListUsers, iam:ListRoles, lambda:ListFunctions,
+          # and inspector2:ListCoverage do not support resource-level permissions.
+          # ecr:DescribeRepositories requires Resource: '*' for listing.
+          - Sid: EC2ReadOnly
+            Effect: Allow
+            Action:
+              - ec2:DescribeInstances
+            Resource: '*'
+          
+          - Sid: ECRReadOnly
+            Effect: Allow
+            Action:
+              - ecr:DescribeRepositories
+              - ecr:DescribeImages
+            Resource: '*'
+          
+          - Sid: LambdaReadOnly
+            Effect: Allow
+            Action:
+              - lambda:ListFunctions
+            Resource: '*'
+          
+          - Sid: IAMReadOnly
+            Effect: Allow
+            Action:
+              - iam:ListUsers
+              - iam:ListRoles
+            Resource: '*'
+          
+          - Sid: InspectorReadOnly
+            Effect: Allow
+            Action:
+              - inspector2:ListCoverage
+            Resource: '*'
+
+Outputs:
+  RoleArn:
+    Description: ARN of the created IAM role
+    Value: !GetAtt SecurityHubCostEstimatorRole.Arn
+  
+  RoleName:
+    Description: Name of the created IAM role
+    Value: !Ref SecurityHubCostEstimatorRole
