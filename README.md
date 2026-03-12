@@ -9,9 +9,9 @@ This tool **runs once** to collect resource metrics from your AWS accounts and g
 - ✅ **Read-only operations** - Makes no changes to your environment
 - ✅ **One-time execution** - Collects data snapshot, then stops
 - ✅ **No persistent resources** - Lambda runs once via CloudFormation, results saved to S3
-- ✅ **Works without Security Hub enabled** - Collects data before you enable services
+- ✅ **Works with or without Security Hub enabled** - Collects resource data regardless of whether Security Hub is currently active
 
-**Use Case:** Run this before enabling Security Hub to estimate monthly costs based on your current resource usage.
+**Use Case:** Estimate monthly Security Hub costs based on your current resource usage — whether you're evaluating Security Hub before enabling it, or reviewing costs for an existing deployment.
 
 ## What This Collects
 
