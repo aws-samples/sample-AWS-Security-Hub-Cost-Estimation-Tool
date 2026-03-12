@@ -35,13 +35,13 @@ Resources:
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
-          # ec2:DescribeInstances, iam:ListUsers, iam:ListRoles, lambda:ListFunctions,
+          # ce:GetCostAndUsage, iam:ListUsers, iam:ListRoles, lambda:ListFunctions,
           # and inspector2:ListCoverage do not support resource-level permissions.
           # ecr:DescribeRepositories requires Resource: '*' for listing.
-          - Sid: EC2ReadOnly
+          - Sid: CostExplorerReadOnly
             Effect: Allow
             Action:
-              - ec2:DescribeInstances
+              - ce:GetCostAndUsage
             Resource: '*'
           
           - Sid: ECRReadOnly

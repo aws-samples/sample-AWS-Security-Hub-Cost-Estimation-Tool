@@ -15,40 +15,47 @@ This tool **runs once** to collect resource metrics from your AWS accounts and g
 
 ## What This Collects
 
-| Metric | Used For |
-|--------|----------|
-| EC2 instance hours/month | Security Hub EC2 pricing |
-| ECR images | Security Hub ECR scanning pricing |
-| Lambda functions | Security Hub Lambda scanning pricing |
-| IAM users & roles | Security Hub IAM analysis pricing |
-| Amazon Inspector coverage | Current scanning status (if enabled) |
+| Metric | Source | Used For |
+|--------|--------|----------|
+| EC2 instance hours/month | Cost Explorer (management account, last month) | Security Hub EC2 pricing |
+| ECR images pushed (last 7 days) | Inspector if enabled, otherwise ECR API | Security Hub ECR scanning pricing |
+| Lambda functions (active last 90 days) | Inspector if enabled, otherwise Lambda API | Security Hub Lambda scanning pricing |
+| IAM users & roles | IAM API | Security Hub IAM analysis pricing |
 
 ## Deployment Overview
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│ Step 1: Deploy IAM Role to ALL Accounts (via StackSets)        │
+│ Step 1: Deploy IAM Role to Management Account                  │
 │                                                                 │
-│  Management Account                                             │
-│       │                                                         │
+│  Management Account (SecurityHubCostEstimatorRole)             │
+│  └──> Used for org-wide EC2 hours via Cost Explorer            │
+│                                                                 │
+│  ⚠️  Cost Explorer data is only available here                 │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│ Step 2: Deploy IAM Role to Member Accounts (via StackSets)     │
+│                                                                 │
 │       ├──> Member Account 1 (SecurityHubCostEstimatorRole)     │
 │       ├──> Member Account 2 (SecurityHubCostEstimatorRole)     │
 │       ├──> Member Account 3 (SecurityHubCostEstimatorRole)     │
-│       └──> ... (all accounts in organization)                  │
+│       └──> ... (all member accounts)                           │
 │                                                                 │
 │  ⚠️  Lambda CANNOT run without this role in each account       │
 └─────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────┐
-│ Step 2: Deploy Lambda Collector (in Audit/Security Account)    │
+│ Step 3: Deploy Lambda Collector (in Audit/Security Account)    │
 │                                                                 │
 │  Audit/Security Account                                         │
 │       │                                                         │
 │       └──> Lambda Function (runs once automatically)           │
 │            │                                                    │
+│            ├──> Assumes role in Management Account             │
+│            │    └──> Gets org-wide EC2 hours (Cost Explorer)   │
 │            ├──> Assumes role in Member Account 1               │
 │            ├──> Assumes role in Member Account 2               │
-│            ├──> Assumes role in Member Account 3               │
 │            └──> Saves results to S3                            │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -68,9 +75,25 @@ Before starting, you need:
 2. **Audit/Security account access** where you'll run the Lambda collector
 3. **Account ID** of the audit/security account where Lambda will run
 
-#### Step 1: Deploy Read-Only Role to ALL Member Accounts
+#### Step 1: Deploy Read-Only Role to Management Account
 
-**This step deploys the IAM role to every account in your organization.** The Lambda collector needs this role to read data from each account.
+**Deploy the IAM role to your management (payer) account first.** The Lambda uses this role to retrieve org-wide EC2 hours from Cost Explorer, which is only available in the management account.
+
+From your **management account**:
+
+```bash
+aws cloudformation deploy \
+  --template-file member-account-role.yaml \
+  --stack-name security-hub-cost-estimator-role \
+  --parameter-overrides CollectorAccountId=YOUR_COLLECTOR_ACCOUNT_ID \
+  --capabilities CAPABILITY_NAMED_IAM
+```
+
+#### Step 2: Deploy Read-Only Role to All Member Accounts
+
+**Deploy the IAM role to every member account via StackSets.** The Lambda needs this role to collect ECR, Lambda, and IAM data from each account.
+
+> **Note:** StackSets don't deploy to the management account — that's why Step 1 is required.
 
 **Option A: Deploy via CloudFormation StackSets (Recommended)**
 
@@ -120,17 +143,7 @@ aws cloudformation create-stack-instances \
 17. Set **Failure tolerance**: 100%
 18. Click **Next** → **Submit**
 
-**Note:** StackSets don't deploy to the management account. Deploy separately:
-
-```bash
-aws cloudformation deploy \
-  --template-file member-account-role.yaml \
-  --stack-name security-hub-cost-estimator-role \
-  --parameter-overrides CollectorAccountId=YOUR_COLLECTOR_ACCOUNT_ID \
-  --capabilities CAPABILITY_NAMED_IAM
-```
-
-#### Step 2: Deploy Lambda Collector
+#### Step 3: Deploy Lambda Collector
 
 Deploy the Lambda function in your audit/security tooling account:
 
@@ -144,6 +157,7 @@ aws cloudformation deploy \
   --parameter-overrides \
     CrossAccountRoleName=SecurityHubCostEstimatorRole \
     TargetRegion=us-east-1 \
+    ManagementAccountId=YOUR_MANAGEMENT_ACCOUNT_ID \
   --capabilities CAPABILITY_IAM
 ```
 
@@ -159,6 +173,7 @@ aws cloudformation deploy \
 8. Set parameters:
    - **CrossAccountRoleName**: `SecurityHubCostEstimatorRole`
    - **TargetRegion**: `us-east-1` (or your preferred region)
+   - **ManagementAccountId**: Your management (payer) account ID
    - **AccountIds**: Leave empty to auto-discover via Organizations
 9. Click **Next**
 10. Scroll to bottom, check **I acknowledge that AWS CloudFormation might create IAM resources**
@@ -201,7 +216,7 @@ python3 collect_security_hub_data.py
 
 **Multiple Accounts:**
 ```bash
-python3 collect_security_hub_data_multi_account.py --role-name SecurityHubCostEstimatorRole
+python3 collect_security_hub_data_multi_account.py --role-name SecurityHubCostEstimatorRole --management-account YOUR_MANAGEMENT_ACCOUNT_ID
 ```
 
 ## Output
@@ -210,8 +225,12 @@ Creates a CSV file: `security_hub_data_YYYYMMDD_HHMMSS.csv`
 
 Example:
 ```csv
-Account ID,Region,EC2 Instances,EC2 Monthly Hours,ECR Repositories,ECR Images,Lambda Functions,IAM Users,IAM Roles,Amazon Inspector Enabled,Lambda Scanned
-123456789012,us-east-1,25,18000,10,150,45,12,85,True,30
+Account ID,Region,ECR Images (Last 7 Days),Lambda Functions (Active 90 Days),IAM Users,IAM Roles,Data Source ECR,Data Source Lambda
+123456789012,us-east-1,42,30,12,85,Inspector,Inspector
+234567890123,us-east-1,10,15,5,45,ECR API,Lambda API
+
+Org-Wide EC2 Monthly Hours (from Cost Explorer),18000
+Avg EC2 Instances (Hours/720),25.0
 ```
 
 Use this data with the [Security Hub Pricing Calculator](https://aws.amazon.com/security-hub/pricing/) or your internal pricing tool.
@@ -226,11 +245,11 @@ Deploy `member-account-role.yaml` to each account. This creates a role designed 
 
 | Service | Permissions | Purpose |
 |---------|-------------|---------|
-| **EC2** | `ec2:DescribeInstances` | Count running instances for Security Hub EC2 pricing |
-| **ECR** | `ecr:DescribeRepositories`<br>`ecr:DescribeImages` | Count container images for Security Hub ECR scanning pricing |
-| **Lambda** | `lambda:ListFunctions` | Count Lambda functions for Security Hub Lambda scanning pricing |
+| **Cost Explorer** | `ce:GetCostAndUsage` | Get EC2 instance hours from last month for Security Hub EC2 pricing |
+| **ECR** | `ecr:DescribeRepositories`<br>`ecr:DescribeImages` | Count container images pushed in last 7 days for Security Hub ECR scanning pricing |
+| **Lambda** | `lambda:ListFunctions` | Count Lambda functions active in last 90 days for Security Hub Lambda scanning pricing |
 | **IAM** | `iam:ListUsers`<br>`iam:ListRoles` | Count IAM resources for Security Hub IAM analysis pricing |
-| **Amazon Inspector** | `inspector2:ListCoverage` | Check current Amazon Inspector scanning status (if enabled) |
+| **Amazon Inspector** | `inspector2:ListCoverage` | Get ECR and Lambda data from Inspector if enabled (preferred source) |
 
 <details>
 <summary>View full IAM policy JSON</summary>
@@ -240,9 +259,9 @@ Deploy `member-account-role.yaml` to each account. This creates a role designed 
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "EC2ReadOnly",
+      "Sid": "CostExplorerReadOnly",
       "Effect": "Allow",
-      "Action": ["ec2:DescribeInstances"],
+      "Action": ["ce:GetCostAndUsage"],
       "Resource": "*"
     },
     {
@@ -326,13 +345,15 @@ python3 collect_security_hub_data.py --profile production
 ### Multiple Accounts - Auto-discover via Organizations
 ```bash
 python3 collect_security_hub_data_multi_account.py \
-  --role-name SecurityHubDataCollectionRole
+  --role-name SecurityHubDataCollectionRole \
+  --management-account YOUR_MANAGEMENT_ACCOUNT_ID
 ```
 
 ### Multiple Accounts - Specific Account List
 ```bash
 python3 collect_security_hub_data_multi_account.py \
   --role-name SecurityHubDataCollectionRole \
+  --management-account YOUR_MANAGEMENT_ACCOUNT_ID \
   --accounts 111111111111,222222222222,333333333333
 ```
 
@@ -340,6 +361,7 @@ python3 collect_security_hub_data_multi_account.py \
 ```bash
 python3 collect_security_hub_data_multi_account.py \
   --role-name SecurityHubDataCollectionRole \
+  --management-account YOUR_MANAGEMENT_ACCOUNT_ID \
   --region eu-west-1
 ```
 
@@ -360,15 +382,16 @@ aws cloudformation deploy \
 ```
 
 This creates a role with:
-- **Read-only permissions** for EC2, ECR, Lambda, IAM, and Amazon Inspector
+- **Read-only permissions** for Cost Explorer, ECR, Lambda, IAM, and Amazon Inspector
 - **Trust policy** that restricts access to only the Lambda execution role in your collector account
 - **No write permissions** - cannot modify any resources
 
 ## Notes
 
 - **Read-only design**: Scripts are designed to make no changes to your AWS environment when used with the provided IAM policies
-- **EC2 hours**: Calculated assuming running instances operate 24/7
-- **Amazon Inspector data**: Only available if Amazon Inspector is already enabled
+- **EC2 hours**: Retrieved from Cost Explorer in the management (payer) account for the previous calendar month (org-wide total)
+- **ECR images**: Images pushed in the last 7 days, sourced from Inspector if enabled, otherwise ECR API
+- **Lambda functions**: Functions updated or invoked in the last 90 days, sourced from Inspector if enabled, otherwise Lambda API
 - **Multi-account**: Processes 5 accounts in parallel (configurable with `--max-workers`)
 - **One-time execution**: Lambda runs once when CloudFormation stack is created
 

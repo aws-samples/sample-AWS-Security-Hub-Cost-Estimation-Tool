@@ -62,6 +62,5 @@ CSV file with columns:
 - Lambda Functions
 - IAM Users
 - IAM Roles
-- Amazon Inspector Enabled
 - Lambda Scanned
 - Error (if any)
