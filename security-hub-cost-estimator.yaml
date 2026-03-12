@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'Deploys a Lambda function to collect AWS Security Hub cost estimation data (one-time execution)'
+Description: 'Deploys a Lambda function to collect AWS Security Hub cost estimation data (one-time execution) - (uksb-rc5ocfsf2w)'
 
 Parameters:
   CrossAccountRoleName:
